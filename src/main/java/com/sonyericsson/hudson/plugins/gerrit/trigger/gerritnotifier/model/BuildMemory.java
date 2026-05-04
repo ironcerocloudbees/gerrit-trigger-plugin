@@ -563,12 +563,11 @@ public class BuildMemory {
      */
     private boolean checkCausedByGerrit(GerritTriggeredEvent event, Collection<Cause> causes) {
         for (Cause c : causes) {
-            if (!(c instanceof GerritCause)) {
-                continue;
-            }
-            GerritCause gc = (GerritCause)c;
-            if (gc.getEvent() == event) {
-                return true;
+            if (c instanceof GerritCause) {
+                GerritCause gc = (GerritCause)c;
+                if (gc.getEvent() == event) {
+                    return true;
+                }
             }
         }
         return false;
