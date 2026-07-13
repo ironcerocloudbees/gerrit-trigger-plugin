@@ -196,7 +196,7 @@ class BackCompat252HudsonTest {
         assertNotNull(cause);
         BadgeAction action = freeStyleBuild.getAction(BadgeAction.class);
         assertNotNull(action);
-        GerritTriggeredEvent event = action.getEvent();
+        GerritTriggeredEvent event = action.getGerritEvent();
         assertNotNull(event);
         GerritEventType eventType = event.getEventType();
         assertSame(PatchsetCreated.class, eventType.getEventRepresentative());
