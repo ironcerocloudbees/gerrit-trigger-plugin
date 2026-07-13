@@ -130,21 +130,8 @@
   margin-bottom: 0;
 }
 
-#gerrit-server-table {
-  width: auto;
-}
-
 #gerrit-server-table .gt-table--center {
-  text-align: center;
-}
-
-.gt-table--center svg {
-  height: 16px!important;
-  width: 16px!important;
-}
-
-.gt-table--center div {
-  display: flex;
+  text-align: center!important;
 }
 
 .icon-xs {
