@@ -395,7 +395,8 @@ public class BuildMemory {
                     if (imprintEntry.isProject(jobName)
                             && !imprintEntry.isBuildCompleted()
                             && !imprintEntry.isCancelling()
-                            && !imprintEntry.isCancelled()) {
+                            && !imprintEntry.isCancelled()
+                            && !imprintEntry.isQueueLeft()) {
                         hasActiveBuildsForJob = true;
                         logger.debug("Found active build for job {}", jobName);
                         break;
@@ -1096,7 +1097,7 @@ public class BuildMemory {
                 if (entry == null) {
                     continue;
                 }
-                if (entry.isCancelling() || entry.isCancelled()) {
+                if (entry.isCancelling() || entry.isCancelled() || entry.isQueueLeft()) {
                     continue;
                 }
                 Run build = entry.getBuild();
@@ -1144,6 +1145,7 @@ public class BuildMemory {
             private boolean buildCompleted;
             private boolean cancelling;
             private boolean cancelled;
+            private boolean queueLeft;
             private String customUrl;
             private String unsuccessfulMessage;
             private final long triggeredTimestamp;
@@ -1194,6 +1196,7 @@ public class BuildMemory {
                 this.customUrl = copy.customUrl;
                 this.cancelling = copy.cancelling;
                 this.cancelled = copy.cancelled;
+                this.queueLeft = copy.queueLeft;
             }
 
             @Override
@@ -1408,6 +1411,35 @@ public class BuildMemory {
              */
             public void setCancelled(boolean cancelled) {
                 this.cancelled = cancelled;
+            }
+
+            /**
+             * Whether the queue item left the queue without a prior Gerrit-triggered cancellation intent.
+             * <p>
+             * This flag covers two cases that are indistinguishable at {@code QueueListener.onLeft} time:
+             * <ul>
+             *   <li>Potential load-balanced move — the item was moved to another instance;
+             *       the build will reappear via {@code onStarted} on that instance.</li>
+             *   <li>Direct {@code Queue.doCancelItem} without a preceding {@code setCancelling} —
+             *       truly removed but not through the normal Gerrit cancellation path.</li>
+             * </ul>
+             * Unlike {@link #isCancelled()}, setting this flag does NOT also set
+             * {@link #setBuildCompleted(boolean)}, preserving the IMap entry for cross-instance
+             * new-patchset abort scenarios (HZ-004).
+             *
+             * @return true if the queue item left without a prior cancelling intent
+             */
+            public boolean isQueueLeft() {
+                return queueLeft;
+            }
+
+            /**
+             * Sets the queueLeft flag.
+             *
+             * @param queueLeft true if the queue item left without a prior cancelling intent
+             */
+            public void setQueueLeft(boolean queueLeft) {
+                this.queueLeft = queueLeft;
             }
 
             /**

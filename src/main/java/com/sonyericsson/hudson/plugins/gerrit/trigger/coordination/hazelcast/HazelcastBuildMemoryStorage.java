@@ -148,7 +148,7 @@ public class HazelcastBuildMemoryStorage extends BuildMemoryStorage {
      * When {@code started()} detects that an entry is already marked {@code isCancelling=true}
      * (race condition: build started after the abort decision was made), the abort inbox entry
      * is written after this delay so the CPS engine has had time to attach a
-     * {@link org.jenkinsci.plugins.workflow.flow.FlowExecution} before the interrupt arrives.
+     * FlowExecution before the interrupt arrives.
      */
     private static final long DEFERRED_ABORT_DELAY_SECONDS = 3L;
 
@@ -489,6 +489,10 @@ public class HazelcastBuildMemoryStorage extends BuildMemoryStorage {
                     if (projectFullName.equals(entryData.getProjectFullName())) {
                         entryData.setBuildId(buildId);
                         entryData.setStartedTimestamp(startedTimestamp);
+                        // The build actually started on a replica — clear any queueLeft flag that
+                        // was set when the queue item was moved by a load balancer. The entry is
+                        // now actively building and must be visible to cancelOutdatedBuilds again.
+                        entryData.setQueueLeft(false);
                         found = true;
                         // If this entry is already marked for cancellation, we need to trigger
                         // cross-replica abort now that buildId is known.
@@ -504,6 +508,7 @@ public class HazelcastBuildMemoryStorage extends BuildMemoryStorage {
                 newEntry.setProjectFullName(projectFullName);
                 newEntry.setBuildId(buildId);
                 newEntry.setStartedTimestamp(startedTimestamp);
+                data.setEvent(event);
                 data.addEntry(newEntry);
             }
             map.put(key, data);
@@ -586,6 +591,7 @@ public class HazelcastBuildMemoryStorage extends BuildMemoryStorage {
                 newEntry.setBuildId(buildId);
                 newEntry.setCompletedTimestamp(completedTimestamp);
                 newEntry.setBuildCompleted(true);
+                data.setEvent(event);
                 data.addEntry(newEntry);
             }
             map.put(key, data);
@@ -691,15 +697,35 @@ public class HazelcastBuildMemoryStorage extends BuildMemoryStorage {
                 for (EntryData entryData : data.getEntries()) {
                     if (projectFullName.equals(entryData.getProjectFullName())) {
                         found = true;
-                        // Mark as cancelled unconditionally. Load-balanced cancellations
-                        // (QueueLoadBalancer moving items between replicas) are already
-                        // filtered out upstream by GerritQueueListener.isLoadBalancedCancellation()
-                        // before cancelled() is ever called.
-                        entryData.setCancelled(true);
-                        entryData.setCancelling(false);
-                        entryData.setCompletedTimestamp(cancelledTimestamp);
-                        entryData.setBuildCompleted(true);
-                        modified = true;
+                        if (!entryData.isBuildCompleted()) {
+                            if (entryData.isCancelling()) {
+                                // Gerrit-triggered cancellation: the intent was set via setCancelling()
+                                // first (e.g. by cancelOutdatedBuilds). This is a real, deliberate cancel.
+                                entryData.setCancelled(true);
+                                entryData.setCancelling(false);
+                                entryData.setCompletedTimestamp(cancelledTimestamp);
+                                entryData.setBuildCompleted(true);
+                            } else if (entryData.getBuildId() == null) {
+                                // No prior cancellation intent AND build has not started anywhere.
+                                // This is a potential load-balanced queue move (build will restart
+                                // on another instance) or a direct Queue.doCancelItem before start.
+                                // Mark queueLeft=true but do NOT set buildCompleted=true so the
+                                // IMap entry is preserved for cross-instance PS2-aborts-PS1 scenarios.
+                                // NOTE: if buildId IS already set, started() already ran on another
+                                // instance — leave the entry completely untouched so it stays visible
+                                // to cancelOutdatedBuilds on that instance.
+                                entryData.setQueueLeft(true);
+                            } else {
+                                logger.debug("cancelled() called after started() for project={} event={}: "
+                                        + "build already running (buildId={}), ignoring late onLeft.",
+                                        projectFullName, key, entryData.getBuildId());
+                            }
+                            modified = true;
+                        } else {
+                            logger.debug("Skipping cancelled() for project={} event={}: "
+                                    + "already completed, buildId={}.",
+                                    projectFullName, key, entryData.getBuildId());
+                        }
                         break;
                     }
                 }
@@ -743,7 +769,8 @@ public class HazelcastBuildMemoryStorage extends BuildMemoryStorage {
                 boolean updated = false;
                 for (EntryData entryData : data.getEntries()) {
                     if (projectFullName.equals(entryData.getProjectFullName())) {
-                        if (!entryData.isBuildCompleted() && !entryData.isCancelling() && !entryData.isCancelled()) {
+                        if (!entryData.isBuildCompleted() && !entryData.isCancelling()
+                                && !entryData.isCancelled() && !entryData.isQueueLeft()) {
                             entryData.setCancelling(true);
                             updated = true;
                         }
@@ -930,7 +957,7 @@ public class HazelcastBuildMemoryStorage extends BuildMemoryStorage {
                 if (entry.getBuild() != null) {
                     return !entry.isBuildCompleted();
                 } else {
-                    return !entry.isCancelling() && !entry.isCancelled();
+                    return !entry.isCancelling() && !entry.isCancelled() && !entry.isQueueLeft();
                 }
             }
         }
@@ -940,7 +967,20 @@ public class HazelcastBuildMemoryStorage extends BuildMemoryStorage {
     @Override
     public synchronized boolean isBuilding(@NonNull GerritTriggeredEvent event) {
         MemoryImprint imprint = getMemoryImprint(event);
-        return imprint != null;
+        if (imprint == null) {
+            return false;
+        }
+        // An event is still "building" if at least one entry is not yet in a terminal state.
+        // queueLeft entries (load-balanced moves or direct doCancelItem) are treated as
+        // inactive — they are not running on this replica. This allows isBuilding(event)
+        // to return false for the unit-test case (direct doCancelItem) while preserving
+        // the IMap key for cross-replica PS2-aborts-PS1 scenarios (HZ-004).
+        for (MemoryImprint.Entry entry : imprint.getEntries()) {
+            if (!entry.isBuildCompleted() && !entry.isQueueLeft()) {
+                return true;
+            }
+        }
+        return false;
     }
 
     @Override
