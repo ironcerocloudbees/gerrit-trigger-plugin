@@ -1221,6 +1221,7 @@ public class BuildMemory {
                 this.buildCompleted = data.isBuildCompleted();
                 this.cancelling = data.isCancelling();
                 this.cancelled = data.isCancelled();
+                this.queueLeft = data.isQueueLeft();
                 this.customUrl = data.getCustomUrl();
                 this.unsuccessfulMessage = data.getUnsuccessfulMessage();
                 this.triggeredTimestamp = data.getTriggeredTimestamp();
@@ -1244,6 +1245,7 @@ public class BuildMemory {
                 data.setBuildCompleted(buildCompleted);
                 data.setCancelling(cancelling);
                 data.setCancelled(cancelled);
+                data.setQueueLeft(queueLeft);
                 data.setCustomUrl(customUrl);
                 data.setUnsuccessfulMessage(unsuccessfulMessage);
                 data.setTriggeredTimestamp(triggeredTimestamp);
