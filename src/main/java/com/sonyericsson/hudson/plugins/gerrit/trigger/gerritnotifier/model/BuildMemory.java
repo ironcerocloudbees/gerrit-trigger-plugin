@@ -1352,6 +1352,7 @@ public class BuildMemory {
                 data.setBuildCompleted(buildCompleted);
                 data.setCancelling(cancelling);
                 data.setCancelled(cancelled);
+                data.setQueueLeft(queueLeft);
                 data.setCustomUrl(customUrl);
                 data.setUnsuccessfulMessage(unsuccessfulMessage);
                 data.setTriggeredTimestamp(triggeredTimestamp);
