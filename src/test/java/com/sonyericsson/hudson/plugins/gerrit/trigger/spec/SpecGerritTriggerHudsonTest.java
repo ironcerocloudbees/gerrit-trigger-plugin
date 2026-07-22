@@ -173,6 +173,7 @@ public class SpecGerritTriggerHudsonTest {
      */
     @After
     public void tearDown() throws Exception {
+        gerritServer.stopConnection();
         serverMock.stopServer(sshd);
         sshd = null;
         HazelcastTestHelper.clearAllMaps();
