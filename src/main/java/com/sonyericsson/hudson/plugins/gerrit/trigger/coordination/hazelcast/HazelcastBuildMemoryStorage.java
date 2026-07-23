@@ -411,7 +411,7 @@ public class HazelcastBuildMemoryStorage extends BuildMemoryStorage {
             return null;
         }
 
-        String key = EventIdentifier.generateEventId(event);
+        String key = EventIdGenerator.generateEventId(event);
         MemoryImprintData data = map.get(key);
         if (data != null) {
             return MemoryImprint.fromData(data);
@@ -427,7 +427,7 @@ public class HazelcastBuildMemoryStorage extends BuildMemoryStorage {
             return;
         }
 
-        String key = EventIdentifier.generateEventId(event);
+        String key = EventIdGenerator.generateEventId(event);
         String projectFullName = project.getFullName();
 
         // ATOMIC OPERATION - Distributed lock ensures only one replica modifies this entry at a time.
@@ -483,7 +483,7 @@ public class HazelcastBuildMemoryStorage extends BuildMemoryStorage {
             return;
         }
 
-        String key = EventIdentifier.generateEventId(event);
+        String key = EventIdGenerator.generateEventId(event);
         String projectFullName = build.getParent().getFullName();
         String buildId = build.getId();
 
@@ -577,7 +577,7 @@ public class HazelcastBuildMemoryStorage extends BuildMemoryStorage {
             return;
         }
 
-        String key = EventIdentifier.generateEventId(event);
+        String key = EventIdGenerator.generateEventId(event);
         String projectFullName = build.getParent().getFullName();
         String buildId = build.getId();
 
@@ -638,7 +638,7 @@ public class HazelcastBuildMemoryStorage extends BuildMemoryStorage {
             return;
         }
 
-        String key = EventIdentifier.generateEventId(event);
+        String key = EventIdGenerator.generateEventId(event);
         String projectFullName = project.getFullName();
 
         // ATOMIC OPERATION - Distributed lock. EntryProcessor not used (ClassNotFoundException in client mode).
@@ -698,7 +698,7 @@ public class HazelcastBuildMemoryStorage extends BuildMemoryStorage {
             return;
         }
 
-        String key = EventIdentifier.generateEventId(event);
+        String key = EventIdGenerator.generateEventId(event);
         String projectFullName = project.getFullName();
 
         // ATOMIC OPERATION - Distributed lock. EntryProcessor not used (ClassNotFoundException in client mode).
@@ -874,7 +874,7 @@ public class HazelcastBuildMemoryStorage extends BuildMemoryStorage {
             return;
         }
 
-        String key = EventIdentifier.generateEventId(event);
+        String key = EventIdGenerator.generateEventId(event);
         String projectFullName = project.getFullName();
 
         // ATOMIC OPERATION - Distributed lock. EntryProcessor not used (ClassNotFoundException in client mode).
@@ -926,7 +926,7 @@ public class HazelcastBuildMemoryStorage extends BuildMemoryStorage {
             return;
         }
 
-        String key = EventIdentifier.generateEventId(event);
+        String key = EventIdGenerator.generateEventId(event);
         String projectFullName = project.getFullName();
         String causeType;
         if (cause instanceof AbandonedPatchsetInterruption) {
@@ -971,7 +971,7 @@ public class HazelcastBuildMemoryStorage extends BuildMemoryStorage {
             return;
         }
 
-        String key = EventIdentifier.generateEventId(event);
+        String key = EventIdGenerator.generateEventId(event);
         map.remove(key);
         logger.trace("Forgot event from distributed memory: {}", key);
     }
@@ -1133,7 +1133,7 @@ public class HazelcastBuildMemoryStorage extends BuildMemoryStorage {
             return;
         }
 
-        String key = EventIdentifier.generateEventId(event);
+        String key = EventIdGenerator.generateEventId(event);
         String projectFullName = r.getParent().getFullName();
 
         // ATOMIC OPERATION - Distributed lock. EntryProcessor not used (ClassNotFoundException in client mode).
@@ -1179,7 +1179,7 @@ public class HazelcastBuildMemoryStorage extends BuildMemoryStorage {
             return;
         }
 
-        String key = EventIdentifier.generateEventId(event);
+        String key = EventIdGenerator.generateEventId(event);
         String projectFullName = r.getParent().getFullName();
 
         // ATOMIC OPERATION - Distributed lock. EntryProcessor not used (ClassNotFoundException in client mode).
@@ -1271,10 +1271,10 @@ public class HazelcastBuildMemoryStorage extends BuildMemoryStorage {
 
     @Override
     public boolean eventsMatch(@NonNull GerritTriggeredEvent event1, @NonNull GerritTriggeredEvent event2) {
-        // In distributed mode, use logical comparison via EventIdentifier
+        // In distributed mode, use logical comparison via EventIdGenerator
         // because events may be deserialized from Hazelcast, creating new object instances
-        String id1 = EventIdentifier.generateEventId(event1);
-        String id2 = EventIdentifier.generateEventId(event2);
+        String id1 = EventIdGenerator.generateEventId(event1);
+        String id2 = EventIdGenerator.generateEventId(event2);
         return id1.equals(id2);
     }
 }
