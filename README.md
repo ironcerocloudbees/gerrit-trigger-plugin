@@ -14,7 +14,6 @@ Each job can be configured with one Gerrit server.
 ## Maintainers
 
 * Robert Sandell
-  - robert.sandell@cloudbees.com
   - sandell.robert@gmail.com
 
 * Tomas Westling
@@ -51,6 +50,13 @@ new warnings
 Run checkstyle
 
     mvn checkstyle:checkstyle
+
+# Distributed Event Management support
+
+The plugin supports an distributed event management for the memory that will track the events (for example using Hazelcast client).
+See [README_DISTRIBUTED_EVENT_MANAGEMENT.md](docs/README_DISTRIBUTED_EVENT_MANAGEMENT.md) for configuration
+properties and deployment examples.
+
 
 # License
 

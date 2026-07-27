@@ -67,6 +67,7 @@
         <surefire.rerunFailingTestsCount>3</surefire.rerunFailingTestsCount>
         <forkCount>0.5C</forkCount>
         <spotbugs.threshold>High</spotbugs.threshold>
+        <hazelcast.version>5.3.8</hazelcast.version>
     </properties>
 
     <dependencies>
@@ -106,6 +107,11 @@
                 </exclusion>
             </exclusions>
             <!-- New source is here: https://github.com/sonyxperiadev/gerrit-events -->
+        </dependency>
+        <dependency>
+            <groupId>com.hazelcast</groupId>
+            <artifactId>hazelcast</artifactId>
+            <version>${hazelcast.version}</version>
         </dependency>
         <dependency>
             <groupId>io.jenkins.plugins</groupId>
@@ -201,6 +207,12 @@
         <dependency>
             <groupId>org.jenkins-ci.plugins.workflow</groupId>
             <artifactId>workflow-support</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.jenkins-ci.plugins.workflow</groupId>
+            <artifactId>workflow-support</artifactId>
+            <classifier>tests</classifier>
             <scope>test</scope>
         </dependency>
         <dependency>
@@ -369,6 +381,42 @@
             </plugin -->
         </plugins>
     </build>
+
+    <profiles>
+        <!--
+            Profile for testing with Hazelcast coordination mode enabled.
+            Usage: mvn clean test -Ptest-hazelcast
+
+            This profile enables Hazelcast distributed coordination during tests to verify:
+            - HazelcastCoordinationProvider is selected
+            - HazelcastBuildMemoryStorage works correctly
+            - Event and notification claiming strategies work
+
+            An embedded Hazelcast server is automatically started before any tests run by
+            HazelcastServerTestListener (discovered via
+            META-INF/services/org.junit.platform.launcher.TestExecutionListener). This provides
+            the localhost:5702 endpoint that the plugin client connects to, with no external
+            Kubernetes or TCP infrastructure required.
+        -->
+        <profile>
+            <id>test-hazelcast</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <artifactId>maven-surefire-plugin</artifactId>
+                        <configuration>
+                            <reuseForks>false</reuseForks>
+                            <forkCount>1</forkCount>
+                            <systemPropertyVariables>
+                                <!-- Enable Hazelcast coordination mode for tests -->
+                                <gerrit.trigger.coordination.mode>hazelcast</gerrit.trigger.coordination.mode>
+                            </systemPropertyVariables>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
 
     <scm>
         <connection>scm:git:https://github.com/${gitHubRepo}.git</connection>

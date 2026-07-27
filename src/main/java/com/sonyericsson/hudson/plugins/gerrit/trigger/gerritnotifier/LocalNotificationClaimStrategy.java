@@ -23,13 +23,17 @@
  */
 package com.sonyericsson.hudson.plugins.gerrit.trigger.gerritnotifier;
 
+import com.sonyericsson.hudson.plugins.gerrit.trigger.spi.ClaimResult;
+import com.sonyericsson.hudson.plugins.gerrit.trigger.spi.ClaimResults;
 import com.sonyericsson.hudson.plugins.gerrit.trigger.spi.NotificationClaimStrategy;
 import com.sonymobile.tools.gerrit.gerritevents.dto.events.GerritTriggeredEvent;
 import edu.umd.cs.findbugs.annotations.NonNull;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Local (non-cluster) implementation of notification claiming.
- * Always returns true since there's no need for coordination in standalone mode.
+ * Always executes the notification action since there's no need for coordination in standalone mode.
  *
  * <p>This is the default/fallback implementation used when cluster mode is not enabled.
  * In standalone Jenkins deployments, there's only one instance, so it always has the
@@ -39,14 +43,22 @@ import edu.umd.cs.findbugs.annotations.NonNull;
  */
 public class LocalNotificationClaimStrategy extends NotificationClaimStrategy {
 
-    @Override
-    public boolean tryClaimNotificationRight(@NonNull GerritTriggeredEvent event) {
-        // In local mode, always send notifications - no coordination needed
-        return true;
-    }
+    private static final Logger logger = LoggerFactory.getLogger(LocalNotificationClaimStrategy.class);
 
     @Override
-    public void releaseNotificationRight(@NonNull GerritTriggeredEvent event) {
-        // No-op in local mode - nothing to release
+    @NonNull
+    public ClaimResult withClaim(@NonNull GerritTriggeredEvent event,
+                                  @NonNull String notificationType,
+                                  String jobIdentifier,
+                                  @NonNull Runnable claimed) {
+        // In local mode, always allow notification - no coordination needed
+        // jobIdentifier is ignored since there's only one instance
+        try {
+            claimed.run();
+            return ClaimResults.success();
+        } catch (Exception e) {
+            logger.error("Error executing notification action", e);
+            return ClaimResults.failed(e);
+        }
     }
 }

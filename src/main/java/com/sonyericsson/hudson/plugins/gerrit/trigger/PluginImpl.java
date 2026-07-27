@@ -24,8 +24,11 @@
  */
 package com.sonyericsson.hudson.plugins.gerrit.trigger;
 
+import com.sonyericsson.hudson.plugins.gerrit.trigger.coordination.CoordinationModeFactory;
+import com.sonyericsson.hudson.plugins.gerrit.trigger.coordination.LocalCoordinationProvider;
 import com.sonyericsson.hudson.plugins.gerrit.trigger.dependency.DependencyQueueTaskDispatcher;
 import com.sonyericsson.hudson.plugins.gerrit.trigger.replication.ReplicationQueueTaskDispatcher;
+import com.sonyericsson.hudson.plugins.gerrit.trigger.spi.CoordinationModeProvider;
 import com.sonymobile.tools.gerrit.gerritevents.GerritHandler;
 import com.sonymobile.tools.gerrit.gerritevents.GerritSendCommandQueue;
 import com.sonyericsson.hudson.plugins.gerrit.trigger.config.Config;
@@ -583,12 +586,88 @@ public class PluginImpl extends GlobalConfiguration {
         logger.info("Starting Gerrit-Trigger Plugin");
         logger.trace("Loading configs");
         load();
+
+        // Initialize coordination providers early (before any code that might use CoordinationModeFactory)
+        // This must happen before BuildMemory, EventClaimStrategy, or NotificationClaimStrategy are used
+        // because provider.isAvailable() may check if resources are initialized
+        initializeCoordinationProviders();
+
+        // Eagerly initialize CoordinationModeFactory so discoverMode() runs now (during startup)
+        // rather than lazily on first event — deferred initialization can add several seconds of
+        // latency to the first build trigger when ExtensionList.lookup() is called from a
+        // background event-processing thread.
+        CoordinationModeFactory.get().getStorage();
+
         GerritSendCommandQueue.initialize(pluginConfig);
         gerritEventManager = new JenkinsAwareGerritHandler(pluginConfig.getNumberOfReceivingWorkerThreads());
         for (GerritServer s : servers) {
             s.start();
         }
         active = true;
+    }
+
+    /**
+     * Initialize the active coordination mode provider.
+     * <p>
+     * This is called early in plugin startup, before any code that might use
+     * CoordinationModeFactory. Only initializes the provider that matches the configured
+     * coordination mode, making it more efficient than calling initialize() on all providers.
+     * <p>
+     * <strong>Implementation Note:</strong> We cannot use {@code provider.isAvailable()}
+     * before initialization because isAvailable() checks if the provider is actually initialized.
+     * Instead, we check the configured mode directly and initialize the matching provider.
+     * After initialization, isAvailable() will return true.
+     * <p>
+     * Fails gracefully - if a provider's initialization fails, it will not be available
+     * and the factory will fall back to the next highest-priority provider.
+     */
+    private void initializeCoordinationProviders() {
+        ExtensionList<CoordinationModeProvider> providers = ExtensionList.lookup(CoordinationModeProvider.class);
+        String configuredMode = CoordinationModeProvider.getConfiguredMode();
+        logger.debug("Configured coordination mode: {}", configuredMode);
+
+        // Try to initialize the configured (non-local) provider first.
+        // Each provider's initialize() internally checks the configured mode and is a no-op
+        // if the mode doesn't match, so we try non-local providers in priority order.
+        // Local is handled separately below as the explicit fallback.
+        if (!"local".equalsIgnoreCase(configuredMode)) {
+            for (CoordinationModeProvider provider : providers) {
+                if (provider instanceof LocalCoordinationProvider) {
+                    continue;
+                }
+                try {
+                    logger.info("Initializing coordination provider: {}", provider.getModeName());
+                    provider.initialize();
+                    if (provider.isAvailable()) {
+                        logger.info("Provider {} initialized successfully", provider.getModeName());
+                        return;
+                    }
+                } catch (Exception e) {
+                    logger.warn("Failed to initialize {} coordination provider. Falling back to Local.",
+                            provider.getModeName(), e);
+                    break;
+                }
+            }
+        }
+
+        // Explicit fallback to LocalCoordinationProvider, which is always available.
+        for (CoordinationModeProvider provider : providers) {
+            if (provider instanceof LocalCoordinationProvider) {
+                if ("local".equalsIgnoreCase(configuredMode)) {
+                    logger.info("Initializing LocalCoordinationProvider");
+                } else {
+                    logger.info("Initializing LocalCoordinationProvider (fallback after failed initialization)");
+                }
+                try {
+                    provider.initialize();
+                } catch (Exception e) {
+                    logger.error("Failed to initialize LocalCoordinationProvider - this should never happen", e);
+                }
+                return;
+            }
+        }
+
+        logger.error("LocalCoordinationProvider not found - this should never happen");
     }
 
     /**
@@ -674,6 +753,11 @@ public class PluginImpl extends GlobalConfiguration {
      */
     public void stop() {
         active = false;
+
+        // Shutdown coordination providers before stopping servers
+        // This ensures any coordination operations are cleaned up before servers disconnect
+        shutdownCoordinationProviders();
+
         for (GerritServer s : servers) {
             s.stop();
         }
@@ -684,6 +768,30 @@ public class PluginImpl extends GlobalConfiguration {
         }
         GerritSendCommandQueue.shutdown();
         servers.clear();
+    }
+
+    /**
+     * Shutdown all coordination mode providers.
+     * <p>
+     * Called during plugin shutdown to clean up coordination resources.
+     * Fails gracefully - errors are logged but don't prevent plugin shutdown.
+     */
+    private void shutdownCoordinationProviders() {
+        logger.debug("Shutting down coordination providers...");
+        for (com.sonyericsson.hudson.plugins.gerrit.trigger.spi.CoordinationModeProvider provider
+                : hudson.ExtensionList.lookup(
+                        com.sonyericsson.hudson.plugins.gerrit.trigger.spi.CoordinationModeProvider.class)) {
+            try {
+                logger.debug("Shutting down provider: {}", provider.getModeName());
+                provider.shutdown();
+                logger.debug("Provider {} shut down successfully", provider.getModeName());
+            } catch (Exception e) {
+                logger.warn("Error shutting down coordination provider: {} (non-critical, continuing shutdown)",
+                        provider.getModeName(), e);
+                // Continue with other providers even if one fails
+            }
+        }
+        logger.debug("Coordination provider shutdown complete");
     }
 
     /**

@@ -353,6 +353,12 @@ public class BuildMemory {
         List<ChangeBasedEvent> outdatedEvents = new ArrayList<>();
         CauseOfInterruption cause = new NewPatchSetInterruption();
 
+        // True if newEvent is itself already outdated relative to some already-registered
+        // event that's a strictly newer patchset of the same change and still has an active
+        // build for this job. Set inside the loop below - see its own comment at the
+        // shouldIgnoreEvent call for why this direction needs a separate check.
+        boolean newEventIsOutdated = false;
+
         synchronized (storage) {
             Map<GerritTriggeredEvent, MemoryImprint> allEvents = storage.getAllEvents();
             logger.info("BuildMemory has {} events in memory", allEvents.size());
@@ -369,7 +375,30 @@ public class BuildMemory {
                 ChangeBasedEvent runningChangeBasedEvent = (ChangeBasedEvent)runningEvent;
                 logger.debug("Checking running event: {}", runningChangeBasedEvent);
 
+                // Never cancel an event against itself (self-cancellation).
+                // This can happen when isAbortNewPatchsets=true and the same event is
+                // processed by multiple jobs — the second job finds the first job's entry
+                // in memory and considers the event "outdated" against itself, poisoning
+                // the isCancelling flag before the build is even scheduled.
+                if (storage.eventsMatch(newEvent, runningChangeBasedEvent)) {
+                    logger.debug("Skipping self-cancellation: running event matches new event");
+                    continue;
+                }
+
                 if (shouldIgnoreEvent(newEvent, policy, runningChangeBasedEvent, trigger)) {
+                    // shouldIgnoreEvent can return true because runningChangeBasedEvent is
+                    // actually the newer patchset (see its own isOldPatch check) - i.e.
+                    // newEvent itself is the outdated one, not the other way around. This
+                    // loop only ever asks "should I cancel the OTHER, already-registered
+                    // event?" - it never asks the reverse. Left unguarded, a late-arriving
+                    // older patchset's own build runs to completion fully unsuppressed
+                    // whenever cross-replica event delivery reorders patchset arrival.
+                    // Detect that case here so newEvent gets cancelled too,
+                    // via the same isCancelling + deferred-abort machinery already used for
+                    // the normal direction.
+                    if (isNewEventOutdatedByRunningEvent(newEvent, runningChangeBasedEvent, jobName, entry.getValue())) {
+                        newEventIsOutdated = true;
+                    }
                     logger.debug("Ignoring event based on policy");
                     continue;
                 }
@@ -382,6 +411,13 @@ public class BuildMemory {
                     logger.debug("Checking entry: project={}, completed={}, cancelling={}, cancelled={}",
                             imprintEntry.getProject(), imprintEntry.isBuildCompleted(),
                             imprintEntry.isCancelling(), imprintEntry.isCancelled());
+                    // Deliberately does NOT check !imprintEntry.isQueueLeft(): queueLeft means
+                    // "left the queue for an ambiguous reason (possibly a load-balanced
+                    // relocation to another replica), not yet confirmed as a genuine
+                    // cancel" - it is not itself proof the entry is done. Excluding it here
+                    // let relocated-but-not-yet-restarted entries dodge cancellation entirely
+                    // whenever a newer patchset arrived during the relocation window
+                    // (a cross-replica race).
                     if (imprintEntry.isProject(jobName)
                             && !imprintEntry.isBuildCompleted()
                             && !imprintEntry.isCancelling()
@@ -403,19 +439,8 @@ public class BuildMemory {
                     // in future cancellation checks (prevents state accumulation issues).
                     // The actual "cancelled" flag will be set later by GerritQueueListener when Jenkins confirms.
                     //
-                    // IMPORTANT: We need to get the imprint from storage again to modify the real one,
-                    // not the copy from getAllEvents()
-                    MemoryImprint storageImprint = storage.getMemoryImprint(runningEvent);
-                    if (storageImprint != null) {
-                        for (Entry imprintEntry : storageImprint.getEntries()) {
-                            if (imprintEntry.isProject(jobName)
-                                    && !imprintEntry.isBuildCompleted()
-                                    && !imprintEntry.isCancelling()
-                                    && !imprintEntry.isCancelled()) {
-                                imprintEntry.setCancelling(true);
-                            }
-                        }
-                    }
+                    // Use storage.setCancelling() to persist the flag atomically
+                    storage.setCancelling(runningEvent, job);
                 }
             }
 
@@ -431,6 +456,19 @@ public class BuildMemory {
                     // Add event so it can be found and cancelled by future events
                     // This is critical for silent mode where onTriggered() isn't called
                     triggered(newEvent, job);
+
+                    // newEvent turned out to be outdated relative to an already-active newer
+                    // patchset for this exact job (see the loop above) - cancel it too, now
+                    // that it's registered, via the same post-loop cancelMatchingJobs path
+                    // used for the normal direction, so started()'s existing deferred-abort
+                    // compensator can still catch it if its own build has already started or
+                    // starts shortly on some replica.
+                    if (newEventIsOutdated) {
+                        logger.info("New event {} is itself outdated relative to an already-active "
+                                + "newer patchset for job {} - cancelling it too", newEvent, jobName);
+                        storage.setCancelling(newEvent, job);
+                        outdatedEvents.add(newEvent);
+                    }
                 }
             }
         }
@@ -466,7 +504,9 @@ public class BuildMemory {
         if (!abortBecauseOfTopic) {
 
             Change change = runningChangeBasedEvent.getChange();
-            if (!change.equals(event.getChange())) {
+            Change newChange = event.getChange();
+            boolean changesEqual = change != null && change.equals(newChange);
+            if (!changesEqual) {
                 return true;
             }
 
@@ -493,6 +533,72 @@ public class BuildMemory {
                     && (event instanceof ChangeAbandoned);
 
             if (!shouldCancelPatchsetNumber && !isAbortAbandonedPatchset) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * True if {@code runningEvent} is a strictly newer patchset of the same change as
+     * {@code newEvent} and still has an active (non-completed, non-cancelling, non-cancelled,
+     * non-queueLeft) build entry for {@code jobName} - i.e. {@code newEvent} itself is the
+     * outdated one here, not {@code runningEvent}.
+     * <p>
+     * This is the mirror image of the {@code isOldPatch} check in {@link #shouldIgnoreEvent}.
+     * That check only ever decides whether {@code runningEvent} should be cancelled by
+     * {@code newEvent} - it correctly refuses to do so when {@code runningEvent} is actually
+     * newer, but nothing then cancels {@code newEvent} itself in that case. Cross-replica event
+     * delivery can deliver a newer patchset's event to some replica before an older one reaches
+     * any replica at all, which is exactly when this matters: without this check, the late-arriving,
+     * actually-outdated {@code newEvent} would never recognize itself as such and would run to
+     * completion alongside the newer patchset that's already building.
+     * <p>
+     * Independently re-checks the same-change condition ({@link #shouldIgnoreEvent} can return
+     * {@code true} for several unrelated reasons - topic mismatch, different change, manual
+     * patchset policy - so its return value alone doesn't confirm this is a patchset-order
+     * situation on the same change).
+     *
+     * @param newEvent the event that just arrived
+     * @param runningEvent an already-registered event to compare against
+     * @param jobName the job to check for an active build
+     * @param imprint runningEvent's current memory imprint
+     * @return true if newEvent should be treated as already outdated relative to runningEvent
+     */
+    private boolean isNewEventOutdatedByRunningEvent(
+            ChangeBasedEvent newEvent, ChangeBasedEvent runningEvent, String jobName, MemoryImprint imprint) {
+
+        Change change = runningEvent.getChange();
+        Change newChange = newEvent.getChange();
+        if (change == null || !change.equals(newChange)) {
+            return false;
+        }
+
+        if (newEvent.getPatchSet() == null || runningEvent.getPatchSet() == null
+                || newEvent.getPatchSet().getNumber() == null || runningEvent.getPatchSet().getNumber() == null) {
+            return false;
+        }
+
+        int newEventNum;
+        int runningEventNum;
+        try {
+            newEventNum = Integer.parseInt(newEvent.getPatchSet().getNumber());
+            runningEventNum = Integer.parseInt(runningEvent.getPatchSet().getNumber());
+        } catch (NumberFormatException e) {
+            return false;
+        }
+
+        if (runningEventNum <= newEventNum) {
+            return false;
+        }
+
+        for (Entry imprintEntry : imprint.getEntries()) {
+            // See the identical comment in cancelOutdatedEvents() above: queueLeft is not
+            // proof this entry is done, so it must not exclude it from being "active".
+            if (imprintEntry.isProject(jobName)
+                    && !imprintEntry.isBuildCompleted()
+                    && !imprintEntry.isCancelling()
+                    && !imprintEntry.isCancelled()) {
                 return true;
             }
         }
@@ -553,6 +659,10 @@ public class BuildMemory {
                     e.interrupt(Result.ABORTED, cause);
                 }
             }
+
+            // Ask the storage implementation to notify other replicas, if any, to
+            // abort matching builds on their local executors.
+            storage.requestCrossReplicaAbort(event, job, cause);
         } catch (Exception e) {
             logger.error("Error canceling job", e);
         }
@@ -561,16 +671,27 @@ public class BuildMemory {
     /**
      * Checks if any of the given causes references the given event.
      * Ported from RunningJobs.checkCausedByGerrit().
+     * <p>
+     * <strong>Important:</strong> Event comparison is delegated to the storage implementation
+     * via {@link BuildMemoryStorage#eventsMatch(GerritTriggeredEvent, GerritTriggeredEvent)},
+     * which always uses logical equality rather than instance identity ({@code ==}) - events
+     * can be deserialized (e.g. {@code GerritCause}'s event loaded from disk, or from Hazelcast
+     * in distributed mode), so two logically-equal events are not guaranteed to be the same
+     * instance:
+     * <ul>
+     *   <li><strong>Local mode:</strong> Uses {@link Object#equals(Object)}</li>
+     *   <li><strong>Distributed mode:</strong> Uses logical comparison via EventIdGenerator</li>
+     * </ul>
      *
-     * @param event the event to check for (checks for identity, not equality)
+     * @param event the event to check for
      * @param causes the list of causes
-     * @return true if the list contains a GerritCause with this event
+     * @return true if the list contains a GerritCause with an equivalent event
      */
     private boolean checkCausedByGerrit(GerritTriggeredEvent event, Collection<Cause> causes) {
         for (Cause c : causes) {
             if (c instanceof GerritCause) {
                 GerritCause gc = (GerritCause)c;
-                if (gc.getEvent() == event) {
+                if (storage.eventsMatch(event, gc.getEvent())) {
                     return true;
                 }
             }
@@ -759,6 +880,41 @@ public class BuildMemory {
          */
         public List<Entry> getEntriesList() {
             return list;
+        }
+
+        /**
+         * Converts this imprint to its serialization-friendly {@link MemoryImprintData} form.
+         * <p>
+         * The event is carried as-is; each entry is mapped via {@link Entry#toEntryData()}.
+         * No Jenkins lookups or serialization happen here — turning the event into a wire
+         * representation is left to the storage layer.
+         *
+         * @return the data representation of this imprint.
+         * @see #fromData(MemoryImprintData)
+         */
+        public synchronized MemoryImprintData toData() {
+            List<EntryData> entries = new ArrayList<EntryData>();
+            for (Entry entry : list) {
+                entries.add(entry.toEntryData());
+            }
+            return new MemoryImprintData(event, entries);
+        }
+
+        /**
+         * Restores a {@link MemoryImprint} from its {@link MemoryImprintData} form.
+         *
+         * @param data the data to restore from.
+         * @return the reconstructed imprint.
+         * @see #toData()
+         */
+        public static MemoryImprint fromData(@NonNull MemoryImprintData data) {
+            MemoryImprint imprint = new MemoryImprint(data.getEvent());
+            if (data.getEntries() != null) {
+                for (EntryData entryData : data.getEntries()) {
+                    imprint.list.add(Entry.fromEntryData(entryData));
+                }
+            }
+            return imprint;
         }
 
         /**
@@ -1046,7 +1202,7 @@ public class BuildMemory {
                 if (entry == null) {
                     continue;
                 }
-                if (entry.isCancelling() || entry.isCancelled()) {
+                if (entry.isCancelling() || entry.isCancelled() || entry.isQueueLeft()) {
                     continue;
                 }
                 Run build = entry.getBuild();
@@ -1094,6 +1250,7 @@ public class BuildMemory {
             private boolean buildCompleted;
             private boolean cancelling;
             private boolean cancelled;
+            private boolean queueLeft;
             private String customUrl;
             private String unsuccessfulMessage;
             private final long triggeredTimestamp;
@@ -1144,11 +1301,73 @@ public class BuildMemory {
                 this.customUrl = copy.customUrl;
                 this.cancelling = copy.cancelling;
                 this.cancelled = copy.cancelled;
+                this.queueLeft = copy.queueLeft;
             }
 
             @Override
             public Entry clone() {
                 return new Entry(this);
+            }
+
+            /**
+             * Constructor that restores an entry from its {@link EntryData} form.
+             * <p>
+             * All fields are copied verbatim, including the timestamps. Unlike the
+             * {@link #setBuild(Run)}/{@link #setBuildCompleted(boolean)} setters, this does not
+             * re-stamp {@code startedTimestamp}/{@code completedTimestamp} with the current time,
+             * so the original moments are preserved across a store/restore round-trip.
+             *
+             * @param data the data to restore from.
+             * @see #fromEntryData(EntryData)
+             */
+            private Entry(EntryData data) {
+                this.project = data.getProjectFullName();
+                this.build = data.getBuildId();
+                this.buildCompleted = data.isBuildCompleted();
+                this.cancelling = data.isCancelling();
+                this.cancelled = data.isCancelled();
+                this.queueLeft = data.isQueueLeft();
+                this.customUrl = data.getCustomUrl();
+                this.unsuccessfulMessage = data.getUnsuccessfulMessage();
+                this.triggeredTimestamp = data.getTriggeredTimestamp();
+                this.completedTimestamp = data.getCompletedTimestamp();
+                this.startedTimestamp = data.getStartedTimestamp();
+            }
+
+            /**
+             * Converts this entry to its serialization-friendly {@link EntryData} form.
+             * <p>
+             * This is a straight field copy with no Jenkins lookups: the entry already holds the
+             * project and build as {@code String} identifiers.
+             *
+             * @return the data representation of this entry.
+             * @see #fromEntryData(EntryData)
+             */
+            public EntryData toEntryData() {
+                EntryData data = new EntryData();
+                data.setProjectFullName(project);
+                data.setBuildId(build);
+                data.setBuildCompleted(buildCompleted);
+                data.setCancelling(cancelling);
+                data.setCancelled(cancelled);
+                data.setQueueLeft(queueLeft);
+                data.setCustomUrl(customUrl);
+                data.setUnsuccessfulMessage(unsuccessfulMessage);
+                data.setTriggeredTimestamp(triggeredTimestamp);
+                data.setCompletedTimestamp(completedTimestamp);
+                data.setStartedTimestamp(startedTimestamp);
+                return data;
+            }
+
+            /**
+             * Restores an {@link Entry} from its {@link EntryData} form.
+             *
+             * @param data the data to restore from.
+             * @return the reconstructed entry.
+             * @see #toEntryData()
+             */
+            public static Entry fromEntryData(@NonNull EntryData data) {
+                return new Entry(data);
             }
 
             /**
@@ -1299,6 +1518,35 @@ public class BuildMemory {
              */
             public void setCancelled(boolean cancelled) {
                 this.cancelled = cancelled;
+            }
+
+            /**
+             * Whether the queue item left the queue without a prior Gerrit-triggered cancellation intent.
+             * <p>
+             * This flag covers two cases that are indistinguishable at {@code QueueListener.onLeft} time:
+             * <ul>
+             *   <li>Potential load-balanced move — the item was moved to another instance;
+             *       the build will reappear via {@code onStarted} on that instance.</li>
+             *   <li>Direct {@code Queue.doCancelItem} without a preceding {@code setCancelling} —
+             *       truly removed but not through the normal Gerrit cancellation path.</li>
+             * </ul>
+             * Unlike {@link #isCancelled()}, setting this flag does NOT also set
+             * {@link #setBuildCompleted(boolean)}, preserving the IMap entry for cross-instance
+             * new-patchset abort scenarios.
+             *
+             * @return true if the queue item left without a prior cancelling intent
+             */
+            public boolean isQueueLeft() {
+                return queueLeft;
+            }
+
+            /**
+             * Sets the queueLeft flag.
+             *
+             * @param queueLeft true if the queue item left without a prior cancelling intent
+             */
+            public void setQueueLeft(boolean queueLeft) {
+                this.queueLeft = queueLeft;
             }
 
             /**

@@ -25,6 +25,7 @@ package com.sonyericsson.hudson.plugins.gerrit.trigger.spec;
 
 import com.sonyericsson.hudson.plugins.gerrit.trigger.GerritServer;
 import com.sonyericsson.hudson.plugins.gerrit.trigger.PluginImpl;
+import com.sonyericsson.hudson.plugins.gerrit.trigger.coordination.hazelcast.HazelcastTestHelper;
 import com.sonyericsson.hudson.plugins.gerrit.trigger.hudsontrigger.GerritTrigger;
 import com.sonyericsson.hudson.plugins.gerrit.trigger.hudsontrigger.GerritTriggerParameters;
 import com.sonyericsson.hudson.plugins.gerrit.trigger.hudsontrigger.data.Branch;
@@ -57,6 +58,7 @@ import hudson.tasks.BuildStepDescriptor;
 import hudson.tasks.Builder;
 import org.hamcrest.MatcherAssert;
 import org.hamcrest.Matchers;
+import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -68,6 +70,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 import static org.hamcrest.core.StringContains.containsString;
 import static org.junit.Assert.assertNotNull;
@@ -87,6 +90,16 @@ public class ParameterModeJenkinsTest {
     public JenkinsRule j = new JenkinsRule();
     private FreeStyleProject job;
     private GerritTrigger trigger;
+
+    /**
+     * Maximum time to wait for {@link #waitForEventToBeBuilt()} to see the event scheduled.
+     */
+    private static final int SCHEDULE_WAIT_SECONDS = 30;
+
+    /**
+     * Poll interval for {@link #waitForEventToBeBuilt()} while waiting for scheduling.
+     */
+    private static final int SCHEDULE_POLL_INTERVAL_MILLIS = 50;
 
     /**
      * Shared setup for all tests.
@@ -111,6 +124,16 @@ public class ParameterModeJenkinsTest {
                 Collections.emptyList(), Collections.emptyList(),
                 Collections.emptyList(), false)));
         trigger.setEscapeQuotes(false);
+    }
+
+    /**
+     * Clean up Hazelcast state after each test to prevent state pollution.
+     * This is critical for CommentAdded tests which use BuildMemory.isBuilding()
+     * to check for duplicate builds.
+     */
+    @After
+    public void tearDown() {
+        HazelcastTestHelper.clearAllMaps();
     }
 
     /**
@@ -153,7 +176,7 @@ public class ParameterModeJenkinsTest {
         assertSame(GerritTriggerParameters.ParameterMode.PLAIN, trigger.getNameAndEmailParameterMode());
         Account ac = new Account("Bobby", "rsandell@cloudbees.com");
         PluginImpl.getHandler_().triggerEvent(Setup.createPatchsetCreatedWithAccounts(ac, ac, ac));
-        j.waitUntilNoActivity();
+        waitForEventToBeBuilt();
         FreeStyleBuild build = job.getLastBuild();
         List<GerritTriggerParameters> params = Arrays.asList(
                 GerritTriggerParameters.GERRIT_CHANGE_OWNER,
@@ -180,7 +203,7 @@ public class ParameterModeJenkinsTest {
         changeAbandoned.getChange().setOwner(ac);
         changeAbandoned.setAbandoner(ac);
         PluginImpl.getHandler_().triggerEvent(changeAbandoned);
-        j.waitUntilNoActivity();
+        waitForEventToBeBuilt();
         FreeStyleBuild build = job.getLastBuild();
         List<GerritTriggerParameters> params = Arrays.asList(
                 GerritTriggerParameters.GERRIT_CHANGE_OWNER,
@@ -208,7 +231,7 @@ public class ParameterModeJenkinsTest {
         topicChanged.getChange().setOwner(ac);
         topicChanged.setChanger(ac);
         PluginImpl.getHandler_().triggerEvent(topicChanged);
-        j.waitUntilNoActivity();
+        waitForEventToBeBuilt();
         FreeStyleBuild build = job.getLastBuild();
         List<GerritTriggerParameters> params = Arrays.asList(
                 GerritTriggerParameters.GERRIT_CHANGE_OWNER,
@@ -237,7 +260,7 @@ public class ParameterModeJenkinsTest {
         change.getChange().setOwner(ac);
         change.setRestorer(ac);
         PluginImpl.getHandler_().triggerEvent(change);
-        j.waitUntilNoActivity();
+        waitForEventToBeBuilt();
         FreeStyleBuild build = job.getLastBuild();
         List<GerritTriggerParameters> params = Arrays.asList(
                 GerritTriggerParameters.GERRIT_CHANGE_OWNER,
@@ -263,7 +286,7 @@ public class ParameterModeJenkinsTest {
         RefUpdated change = Setup.createRefUpdated(PluginImpl.DEFAULT_SERVER_NAME, "olle", "abc123");
         change.setAccount(ac);
         PluginImpl.getHandler_().triggerEvent(change);
-        j.waitUntilNoActivity();
+        waitForEventToBeBuilt();
         FreeStyleBuild build = job.getLastBuild();
         List<GerritTriggerParameters> params = Collections.singletonList(GerritTriggerParameters.GERRIT_EVENT_ACCOUNT);
         //TODO According to the doc GerritTriggerParameters.GERRIT_SUBMITTER should be set as well but its not?
@@ -285,7 +308,7 @@ public class ParameterModeJenkinsTest {
         trigger.setNameAndEmailParameterMode(GerritTriggerParameters.ParameterMode.BASE64);
         Account ac = new Account("Bobby", "rsandell@cloudbees.com");
         PluginImpl.getHandler_().triggerEvent(Setup.createPatchsetCreatedWithAccounts(ac, ac, ac));
-        j.waitUntilNoActivity();
+        waitForEventToBeBuilt();
         FreeStyleBuild build = job.getLastBuild();
         List<GerritTriggerParameters> params = Arrays.asList(
                 GerritTriggerParameters.GERRIT_CHANGE_OWNER,
@@ -308,7 +331,7 @@ public class ParameterModeJenkinsTest {
         trigger.setNameAndEmailParameterMode(GerritTriggerParameters.ParameterMode.NONE);
         Account ac = new Account("Bobby", "rsandell@cloudbees.com");
         PluginImpl.getHandler_().triggerEvent(Setup.createPatchsetCreatedWithAccounts(ac, ac, ac));
-        j.waitUntilNoActivity();
+        waitForEventToBeBuilt();
         FreeStyleBuild build = job.getLastBuild();
         List<GerritTriggerParameters> params = Arrays.asList(
                 GerritTriggerParameters.GERRIT_CHANGE_OWNER,
@@ -334,7 +357,7 @@ public class ParameterModeJenkinsTest {
         PatchsetCreated event = Setup.createPatchsetCreated();
         event.getChange().setCommitMessage(expected);
         PluginImpl.getHandler_().triggerEvent(event);
-        j.waitUntilNoActivity();
+        waitForEventToBeBuilt();
         FreeStyleBuild build = job.getLastBuild();
         assertLogContains(GerritTriggerParameters.GERRIT_CHANGE_COMMIT_MESSAGE.name()
                 + "="
@@ -355,7 +378,7 @@ public class ParameterModeJenkinsTest {
         PatchsetCreated event = Setup.createPatchsetCreated();
         event.getChange().setCommitMessage(expected);
         PluginImpl.getHandler_().triggerEvent(event);
-        j.waitUntilNoActivity();
+        waitForEventToBeBuilt();
         FreeStyleBuild build = job.getLastBuild();
         assertLogContains(GerritTriggerParameters.GERRIT_CHANGE_COMMIT_MESSAGE.name()
                 + "="
@@ -376,7 +399,7 @@ public class ParameterModeJenkinsTest {
         PatchsetCreated event = Setup.createPatchsetCreated();
         event.getChange().setCommitMessage(expected);
         PluginImpl.getHandler_().triggerEvent(event);
-        j.waitUntilNoActivity();
+        waitForEventToBeBuilt();
         FreeStyleBuild build = job.getLastBuild();
         assertLogNotContains(GerritTriggerParameters.GERRIT_CHANGE_COMMIT_MESSAGE.name(), build);
     }
@@ -396,7 +419,7 @@ public class ParameterModeJenkinsTest {
         CommentAdded event = Setup.createCommentAdded();
         event.setComment(expected);
         PluginImpl.getHandler_().triggerEvent(event);
-        j.waitUntilNoActivity();
+        waitForEventToBeBuilt();
         FreeStyleBuild build = job.getLastBuild();
         assertLogContains(GerritTriggerParameters.GERRIT_EVENT_COMMENT_TEXT.name()
                 + "="
@@ -418,7 +441,7 @@ public class ParameterModeJenkinsTest {
         CommentAdded event = Setup.createCommentAdded();
         event.setComment(expected);
         PluginImpl.getHandler_().triggerEvent(event);
-        j.waitUntilNoActivity();
+        waitForEventToBeBuilt();
         FreeStyleBuild build = job.getLastBuild();
         assertLogContains(GerritTriggerParameters.GERRIT_EVENT_COMMENT_TEXT.name()
                 + "="
@@ -440,7 +463,7 @@ public class ParameterModeJenkinsTest {
         CommentAdded event = Setup.createCommentAdded();
         event.setComment(expected);
         PluginImpl.getHandler_().triggerEvent(event);
-        j.waitUntilNoActivity();
+        waitForEventToBeBuilt();
         FreeStyleBuild build = job.getLastBuild();
         assertLogNotContains(GerritTriggerParameters.GERRIT_EVENT_COMMENT_TEXT.name(), build);
     }
@@ -459,7 +482,7 @@ public class ParameterModeJenkinsTest {
         PatchsetCreated event = Setup.createPatchsetCreated();
         event.getChange().setSubject(expected);
         PluginImpl.getHandler_().triggerEvent(event);
-        j.waitUntilNoActivity();
+        waitForEventToBeBuilt();
         FreeStyleBuild build = job.getLastBuild();
         assertLogNotContains(GerritTriggerParameters.GERRIT_CHANGE_SUBJECT.name(), build);
     }
@@ -478,7 +501,7 @@ public class ParameterModeJenkinsTest {
         PatchsetCreated event = Setup.createPatchsetCreated();
         event.getChange().setSubject(expected);
         PluginImpl.getHandler_().triggerEvent(event);
-        j.waitUntilNoActivity();
+        waitForEventToBeBuilt();
         FreeStyleBuild build = job.getLastBuild();
         assertLogContains(GerritTriggerParameters.GERRIT_CHANGE_SUBJECT.name()
                 + "="
@@ -499,11 +522,32 @@ public class ParameterModeJenkinsTest {
         PatchsetCreated event = Setup.createPatchsetCreated();
         event.getChange().setSubject(expected);
         PluginImpl.getHandler_().triggerEvent(event);
-        j.waitUntilNoActivity();
+        waitForEventToBeBuilt();
         FreeStyleBuild build = job.getLastBuild();
         assertLogContains(GerritTriggerParameters.GERRIT_CHANGE_SUBJECT.name()
                 + "="
                 + GerritTriggerParameters.ParameterMode.encodeBase64(expected), build);
+    }
+
+    /**
+     * Waits for the event fired via {@link PluginImpl#getHandler_()} to be picked up and
+     * scheduled as a build, then waits for that build to finish.
+     * <p>
+     * {@code triggerEvent} hands the event to a background worker thread; with Hazelcast
+     * coordination the worker's event-claim check does a network round trip, so the item may
+     * not exist in Jenkins' queue yet at the moment this is called. {@link JenkinsRule
+     * #waitUntilNoActivity()} alone can't tell "nothing scheduled yet" apart from "already
+     * finished" — an empty queue looks the same either way — so it can return before the
+     * build was ever created.
+     *
+     * @throws Exception if so
+     */
+    private void waitForEventToBeBuilt() throws Exception {
+        long deadline = System.currentTimeMillis() + TimeUnit.SECONDS.toMillis(SCHEDULE_WAIT_SECONDS);
+        while (job.getLastBuild() == null && !job.isInQueue() && System.currentTimeMillis() < deadline) {
+            Thread.sleep(SCHEDULE_POLL_INTERVAL_MILLIS);
+        }
+        j.waitUntilNoActivity();
     }
 
     /**
