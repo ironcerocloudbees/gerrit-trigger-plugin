@@ -43,11 +43,12 @@ import hudson.util.IOUtils;
 import jenkins.model.Jenkins;
 import net.sf.json.JSONObject;
 
-import org.junit.Before;
-import org.junit.Rule;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
 import org.jvnet.hudson.test.JenkinsRule;
 import org.jvnet.hudson.test.TestExtension;
+import org.jvnet.hudson.test.junit.jupiter.WithJenkins;
 import org.kohsuke.stapler.StaplerRequest2;
 import org.kohsuke.stapler.StaplerResponse2;
 
@@ -55,29 +56,30 @@ import java.io.IOException;
 import java.io.PrintWriter;
 import java.util.Collections;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 /**
  * Tests {@link BuildCompletedRestCommandJob}.
  *
  * @author <a href="mailto:robert.sandell@sonymobile.com">Robert Sandell</a>
  */
-public class BuildCompletedRestCommandJobHudsonTest {
+@WithJenkins
+class BuildCompletedRestCommandJobHudsonTest {
 
     /**
      * An instance of Jenkins Rule.
      */
-    // CS IGNORE VisibilityModifier FOR NEXT 2 LINES. REASON: JenkinsRule.
-    @Rule
-    public JenkinsRule j = new JenkinsRule();
+    private JenkinsRule j;
 
     /**
      * Unlock the instance if secured.
-     * @throws Exception if it occurs.
+     *
+     * @param rule the jenkins rule
      */
-    @Before
-    public void unlockInstance() throws Exception {
+    @BeforeEach
+    void setUp(JenkinsRule rule) {
+        j = rule;
         Setup.unLock(j);
         // Clear Hazelcast notification flags between test methods to prevent claim key collision.
         // Test events use a fixed eventCreatedOn timestamp, producing identical claim keys across tests.
@@ -141,13 +143,14 @@ public class BuildCompletedRestCommandJobHudsonTest {
         assertEquals(1, labels.getInt("Code-Review"));
         assertEquals(1, labels.getInt("Verified"));
     }
+
     /**
      * The test with a locked down instance.
      *
      * @throws Exception          if so
      */
     @Test
-    public void testItWithSecurity() throws Exception {
+    void testItWithSecurity() throws Exception {
         Setup.lockDown(j);
         runTest();
     }
@@ -158,7 +161,7 @@ public class BuildCompletedRestCommandJobHudsonTest {
      * @throws Exception          if so
      */
     @Test
-    public void testIt() throws Exception {
+    void testIt() throws Exception {
         runTest();
     }
     /**

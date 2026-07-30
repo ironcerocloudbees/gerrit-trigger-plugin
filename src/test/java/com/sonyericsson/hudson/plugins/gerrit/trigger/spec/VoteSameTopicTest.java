@@ -9,8 +9,6 @@ import com.sonyericsson.hudson.plugins.gerrit.trigger.hudsontrigger.data.Branch;
 import com.sonyericsson.hudson.plugins.gerrit.trigger.hudsontrigger.data.CompareType;
 import com.sonyericsson.hudson.plugins.gerrit.trigger.hudsontrigger.data.GerritProject;
 import com.sonyericsson.hudson.plugins.gerrit.trigger.hudsontrigger.data.TopicAssociation;
-import com.sonyericsson.hudson.plugins.gerrit.trigger.hudsontrigger.data.Topic;
-import com.sonyericsson.hudson.plugins.gerrit.trigger.hudsontrigger.data.FilePath;
 import com.sonyericsson.hudson.plugins.gerrit.trigger.hudsontrigger.events.PluginCommentAddedEvent;
 import com.sonyericsson.hudson.plugins.gerrit.trigger.mock.Setup;
 import com.sonymobile.tools.gerrit.gerritevents.dto.events.CommentAdded;
@@ -24,14 +22,17 @@ import hudson.model.FreeStyleProject;
 import hudson.tasks.BuildStepDescriptor;
 import hudson.tasks.Builder;
 
+import jakarta.annotation.Nonnull;
 import org.apache.sshd.server.SshServer;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Rule;
-import org.junit.Test;
-import org.jvnet.hudson.test.BuildWatcher;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+import org.junit.jupiter.api.extension.RegisterExtension;
 import org.jvnet.hudson.test.JenkinsRule;
 import org.jvnet.hudson.test.TestExtension;
+import org.jvnet.hudson.test.junit.jupiter.BuildWatcherExtension;
+import org.jvnet.hudson.test.junit.jupiter.WithJenkins;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -43,19 +44,18 @@ import java.util.List;
  *
  * @author Jack Mo &lt;jack.mo@dji.com&gt;.
  */
-public class VoteSameTopicTest {
+@WithJenkins
+class VoteSameTopicTest {
     /**
      * An instance of Jenkins Rule.
      */
-    // CS IGNORE VisibilityModifier FOR NEXT 5 LINES. REASON: JenkinsRule.
-    @Rule
-    public JenkinsRule j = new JenkinsRule();
+    private JenkinsRule j;
     /**
      * Print build logs to test output.
      */
-    @Rule
-    public BuildWatcher watcher = new BuildWatcher();
-    private List<FreeStyleProject> jobs = new ArrayList<>();
+    @RegisterExtension
+    private static final BuildWatcherExtension BUILD_WATCHER = new BuildWatcherExtension();
+    private final List<FreeStyleProject> jobs = new ArrayList<>();
 
     private SshdServerMock server;
     private SshServer sshd;
@@ -77,8 +77,8 @@ public class VoteSameTopicTest {
         trigger.getTriggerOnEvents().add(new PluginCommentAddedEvent("Code-Review", "1"));
         trigger.setGerritProjects(Collections.singletonList(new GerritProject(CompareType.ANT, pattern,
                 Collections.singletonList(new Branch(CompareType.ANT, "**")),
-                Collections.<Topic>emptyList(), Collections.<FilePath>emptyList(),
-                Collections.<FilePath>emptyList(), false)));
+                Collections.emptyList(), Collections.emptyList(),
+                Collections.emptyList(), false)));
         trigger.setEscapeQuotes(false);
         trigger.setSilentMode(false);
 
@@ -88,10 +88,13 @@ public class VoteSameTopicTest {
     /**
      * Shared setup for all tests.
      *
+     * @param rule the jenkins rule
+     *
      * @throws Exception if so.
      */
-    @Before
-    public void setup() throws Exception {
+    @BeforeEach
+    void setup(JenkinsRule rule) throws Exception {
+        j = rule;
         final SshdServerMock.KeyPairFiles sshKey = SshdServerMock.generateKeyPair();
 
         server = new SshdServerMock();
@@ -123,8 +126,8 @@ public class VoteSameTopicTest {
      *
      * @throws Exception throw if so.
      */
-    @After
-    public void tearDown() throws Exception {
+    @AfterEach
+    void tearDown() throws Exception {
         server.stopServer(sshd);
         sshd = null;
         HazelcastTestHelper.clearAllMaps();
@@ -171,7 +174,7 @@ public class VoteSameTopicTest {
      * @throws Exception if so
      */
     @Test
-    public void testVoteSameTopic() throws Exception {
+    void testVoteSameTopic() throws Exception {
         //CS IGNORE MagicNumber FOR NEXT 4 LINES. REASON: Testdata.
         server.waitForCommand("gerrit stream-events", 2000);
         triggerAndWait(projects[0]);
@@ -187,8 +190,7 @@ public class VoteSameTopicTest {
     public static class ParametersBuilder extends Builder {
 
         @Override
-        public boolean perform(AbstractBuild<?, ?> build, Launcher launcher, BuildListener listener)
-                throws InterruptedException, IOException {
+        public boolean perform(AbstractBuild<?, ?> build, Launcher launcher, BuildListener listener) {
             return true;
         }
 
@@ -204,6 +206,7 @@ public class VoteSameTopicTest {
             }
 
             @Override
+            @Nonnull
             public String getDisplayName() {
                 return "Test";
             }

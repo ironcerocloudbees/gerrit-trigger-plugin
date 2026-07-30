@@ -68,6 +68,7 @@
         <forkCount>0.5C</forkCount>
         <spotbugs.threshold>High</spotbugs.threshold>
         <hazelcast.version>5.3.8</hazelcast.version>
+        <ban-junit4-imports.skip>true</ban-junit4-imports.skip>
     </properties>
 
     <dependencies>

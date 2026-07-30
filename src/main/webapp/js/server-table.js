@@ -30,15 +30,20 @@ function refreshServerTable() {
         return icons.content.querySelector(`#${name}`).cloneNode(true);
     }
 
-    function createLink(url, icon, tagName, callback, disabled) {
+    function createLink(url, icon, tagName, callback, disabled, tooltip) {
         tagName = tagName == null ? 'a' : tagName;
         disabled = disabled == null ? false : disabled;
         const td = document.createElement("td");
-        td.classList.add("gt-table--center");
+        td.classList.add("gt-table--center", "jenkins-table__cell--tight");
+        const wrapper = document.createElement("div");
+        wrapper.classList.add("jenkins-table__cell__button-wrapper");
 
         const element = document.createElement(tagName);
-        element.classList.add("jenkins-button");
+        element.classList.add("jenkins-table__button");
         element.appendChild(icon);
+        if (tooltip) {
+            wrapper.setAttribute("tooltip", tooltip);
+        }
         if (callback) {
             element.onclick = function(event) {
                 callback(event, element);
@@ -47,7 +52,8 @@ function refreshServerTable() {
         } else {
             element.href = url;
         }
-        td.appendChild(element);
+        wrapper.appendChild(element);
+        td.appendChild(wrapper);
         return td;
     }
 
@@ -100,16 +106,19 @@ function refreshServerTable() {
         let statusIcon;
         let disabled = false;
         let callback = "toggleServer";
+        let tooltip = table.dataset.connectText;
         if (server.status === "up") {
             statusIcon= generateSVGIcon("gerrit-status-connected");
+            tooltip = table.dataset.disconnectText;
         } else if (server.status === "down") {
             statusIcon= generateSVGIcon("gerrit-status-disconnected")
         } else {
             statusIcon= generateSVGIcon("gerrit-status-unknown")
             disabled = true;
             callback = null;
+            tooltip = null;
         }
-        row.appendChild(createLink("", statusIcon, "button", toggleServer, disabled));
+        row.appendChild(createLink("", statusIcon, "button", toggleServer, disabled, tooltip));
 
         const icon = generateSVGIcon("gerrit-symbol-settings");
         if (server.hasErrors) {
@@ -133,6 +142,7 @@ function refreshServerTable() {
                 json.servers.forEach(function(server) {
                     createTableRow(server, tbody)
                 });
+                Behaviour.apply(table);
                 table.tBodies[0].remove();
                 tbody.classList.remove("jenkins-hidden");
             });

@@ -80,17 +80,17 @@ public class BadgeAction implements BuildBadgeAction {
      *
      * @return the event.
      */
-    public GerritTriggeredEvent getEvent() {
+    public GerritTriggeredEvent getGerritEvent() {
         return tEvent;
     }
 
     /**
      * The event to show.
      *
-     * @param event the event.
+     * @param gerritEvent the event.
      */
-    public void setEvent(GerritTriggeredEvent event) {
-        this.tEvent = event;
+    public void setGerritEvent(GerritTriggeredEvent gerritEvent) {
+        this.tEvent = gerritEvent;
     }
 
     /**
